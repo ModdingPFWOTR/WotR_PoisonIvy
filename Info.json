@@ -1,0 +1,14 @@
+{
+  "Id": "PoisonIvy",
+  "DisplayName": "Poison Ivy",
+  "Author": "Picninim piq",
+  "Version": "0.1.0",
+  "ManagerVersion": "0.23.0",
+  "GameVersion": "2.7.0",
+  "Requirements": [ "TabletopTweaks-Base" ],
+  "LoadAfter": [ "TabletopTweaks-Base" ],
+  "AssemblyName": "PoisonIvy.dll",
+  "EntryMethod": "PoisonIvy.Main.Load",
+  "HomePage": "",
+  "Repository": ""
+}

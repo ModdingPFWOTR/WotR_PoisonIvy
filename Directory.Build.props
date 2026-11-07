@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <GamePath>D:\SteamLibrary\steamapps\common\Pathfinder Second Adventure</GamePath>
+    <GameManagedPath>$(GamePath)\Wrath_Data\Managed</GameManagedPath>
+    <UMMPath>$(GameManagedPath)\UnityModManager</UMMPath>
+    <ModsPath>$(GamePath)\Mods</ModsPath>
+  </PropertyGroup>
+</Project>
