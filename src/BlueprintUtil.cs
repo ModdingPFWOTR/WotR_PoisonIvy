@@ -55,6 +55,31 @@ namespace PoisonIvy
             ResourcesLibrary.BlueprintsCache.AddCachedBlueprint(blueprint.AssetGuid, blueprint);
         }
 
+        public static BlueprintScriptableObject Clone(BlueprintScriptableObject source, string name, string guid)
+        {
+            var clone = (BlueprintScriptableObject)Activator.CreateInstance(source.GetType());
+            CopyMergedFields(source, clone);
+            clone.name = name;
+            clone.AssetGuid = BlueprintGuid.Parse(guid);
+            if (source.ComponentsArray != null)
+            {
+                var components = source.ComponentsArray.Select(component => CloneComponent(component, clone)).ToArray();
+                Set(clone, "Components", components);
+            }
+
+            Register(clone);
+            return clone;
+        }
+
+        public static BlueprintComponent CloneComponent(BlueprintComponent source, BlueprintScriptableObject owner)
+        {
+            var clone = (BlueprintComponent)Activator.CreateInstance(source.GetType());
+            CopyMergedFields(source, clone);
+            clone.name = source.name;
+            Own(clone, owner);
+            return clone;
+        }
+
         public static T Component<T>(BlueprintScriptableObject blueprint) where T : BlueprintComponent
         {
             var components = blueprint?.ComponentsArray;

@@ -3,6 +3,8 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using HarmonyLib;
 using Kingmaker.Blueprints;
 using Kingmaker.Blueprints.Classes;
@@ -38,6 +40,7 @@ namespace PoisonIvy
         const string Talent6Guid = "43d1b15873e926848be2abf0ea3ad9a8";
         const string Talent10Guid = "913b9cf25c9536949b43a2651b7ffb66";
         const string PainfulFallbackGuid = "052c82521039f7b4e978207eb533ead5";
+        const string PainfulCloneGuid = "c3b7e1a24d6f4e8a9b0c1d2e3f4a5b61";
         const string VenomIconGuid = "5078622eb5cecaf4683fa16a9b948c2c";
 
         const string Description =
@@ -77,7 +80,7 @@ namespace PoisonIvy
             }
             else
             {
-                BlueprintUtil.AddAtLevel(added, 4, painful);
+                BlueprintUtil.AddAtLevel(added, 4, AdaptPainfulStrike(painful));
             }
 
             try
@@ -243,6 +246,213 @@ namespace PoisonIvy
             }
 
             return fallback;
+        }
+
+        static BlueprintFeature AdaptPainfulStrike(BlueprintFeature source)
+        {
+            var clone = (BlueprintFeature)BlueprintUtil.Clone(source, "PoisonIvyPainfulStrike", PainfulCloneGuid);
+            var cloned = new Dictionary<string, BlueprintScriptableObject>(StringComparer.OrdinalIgnoreCase)
+            {
+                [Norm(source.AssetGuid.ToString())] = clone
+            };
+            RetargetRanks(clone);
+            RewriteReferences(clone, cloned, 0, new HashSet<object>(new ReferenceComparer()));
+            DescribePainfulStrike(clone);
+            Main.Log("Painful Strike save DC uses druid level.");
+            return clone;
+        }
+
+        static void DescribePainfulStrike(BlueprintFeature feature)
+        {
+            var description = AccessTools.Field(feature.GetType(), "m_Description")?.GetValue(feature);
+            var text = description?.ToString();
+            if (string.IsNullOrEmpty(text) || text.IndexOf("executioner", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                return;
+            }
+
+            var updated = System.Text.RegularExpressions.Regex.Replace(text, "executioner's", "druid's", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            updated = System.Text.RegularExpressions.Regex.Replace(updated, "executioner", "druid", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            BlueprintUtil.SetName(feature, "PoisonIvy.PainfulStrike", "Painful Strike", updated);
+        }
+
+        static void RetargetRanks(BlueprintScriptableObject blueprint)
+        {
+            if (blueprint?.ComponentsArray == null)
+            {
+                return;
+            }
+
+            foreach (var rank in blueprint.ComponentsArray.OfType<ContextRankConfig>())
+            {
+                var classes = AccessTools.Field(typeof(ContextRankConfig), "m_Class");
+                if (classes != null)
+                {
+                    var replacement = Array.CreateInstance(classes.FieldType.GetElementType(), 1);
+                    replacement.SetValue(Druid.ToReference<BlueprintCharacterClassReference>(), 0);
+                    classes.SetValue(rank, replacement);
+                }
+
+                var additional = AccessTools.Field(typeof(ContextRankConfig), "m_AdditionalArchetypes");
+                var additionalValue = additional?.GetValue(rank) as Array;
+                if (additional != null && additionalValue != null && additionalValue.Length > 0)
+                {
+                    additional.SetValue(rank, Array.CreateInstance(additional.FieldType.GetElementType(), 0));
+                }
+
+                var archetype = AccessTools.Field(typeof(ContextRankConfig), "Archetype")
+                    ?? AccessTools.Field(typeof(ContextRankConfig), "m_Archetype");
+                if (archetype != null && !archetype.FieldType.IsValueType)
+                {
+                    archetype.SetValue(rank, Activator.CreateInstance(archetype.FieldType));
+                }
+            }
+        }
+
+        static void RewriteReferences(object target, Dictionary<string, BlueprintScriptableObject> cloned, int depth, HashSet<object> seen)
+        {
+            if (target == null || depth > 5 || target is string || !seen.Add(target))
+            {
+                return;
+            }
+
+            var type = target.GetType();
+            if (type.Namespace != null && type.Namespace.StartsWith("UnityEngine", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            foreach (var field in type.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                if (field.FieldType.IsPrimitive || field.FieldType.IsEnum)
+                {
+                    continue;
+                }
+
+                var value = field.GetValue(target);
+                if (value == null)
+                {
+                    continue;
+                }
+
+                if (value is Array array)
+                {
+                    var elementType = field.FieldType.GetElementType();
+                    if (elementType == null || elementType.IsValueType)
+                    {
+                        continue;
+                    }
+
+                    for (var i = 0; i < array.Length; i++)
+                    {
+                        var item = array.GetValue(i);
+                        var replacement = ReplacementFor(item, cloned, depth, seen);
+                        if (replacement != null)
+                        {
+                            array.SetValue(replacement, i);
+                        }
+                        else if (item != null && !(item is string))
+                        {
+                            RewriteReferences(item, cloned, depth + 1, seen);
+                        }
+                    }
+                }
+                else
+                {
+                    var replacement = ReplacementFor(value, cloned, depth, seen);
+                    if (replacement != null)
+                    {
+                        field.SetValue(target, replacement);
+                    }
+                    else if (!field.FieldType.IsValueType)
+                    {
+                        RewriteReferences(value, cloned, depth + 1, seen);
+                    }
+                }
+            }
+        }
+
+        static object ReplacementFor(object reference, Dictionary<string, BlueprintScriptableObject> cloned, int depth, HashSet<object> seen)
+        {
+            if (reference == null || reference is BlueprintScriptableObject || reference is string)
+            {
+                return null;
+            }
+
+            var getter = reference.GetType().GetMethod("Get", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null);
+            if (getter == null || !reference.GetType().Name.EndsWith("Reference", StringComparison.Ordinal))
+            {
+                return null;
+            }
+
+            var resolved = getter.Invoke(reference, null) as BlueprintScriptableObject;
+            if (resolved == null)
+            {
+                return null;
+            }
+
+            var key = Norm(resolved.AssetGuid.ToString());
+            if (!cloned.TryGetValue(key, out var copy))
+            {
+                if (resolved.ComponentsArray == null || !resolved.ComponentsArray.OfType<ContextRankConfig>().Any())
+                {
+                    return null;
+                }
+
+                copy = BlueprintUtil.Clone(resolved, "PoisonIvy" + resolved.name, StableGuid(key));
+                cloned[key] = copy;
+                RetargetRanks(copy);
+                RewriteReferences(copy, cloned, depth + 1, seen);
+            }
+
+            return MakeReference(copy, reference.GetType());
+        }
+
+        static object MakeReference(BlueprintScriptableObject blueprint, Type referenceType)
+        {
+            var method = SafeTypes(typeof(BlueprintScriptableObject).Assembly)
+                .SelectMany(type => type.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                .First(candidate => candidate.Name == "ToReference" && candidate.IsGenericMethodDefinition && candidate.GetParameters().Length == 1);
+            return method.MakeGenericMethod(referenceType).Invoke(null, new object[] { blueprint });
+        }
+
+        static IEnumerable<Type> SafeTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types.Where(type => type != null);
+            }
+        }
+
+        static string StableGuid(string sourceGuid)
+        {
+            using (var md5 = MD5.Create())
+            {
+                var hash = md5.ComputeHash(Encoding.UTF8.GetBytes("PoisonIvy:" + sourceGuid));
+                return BitConverter.ToString(hash).Replace("-", "").ToLowerInvariant();
+            }
+        }
+
+        static string Norm(string guid)
+        {
+            return guid == null ? "" : guid.Replace("-", "");
+        }
+
+        sealed class ReferenceComparer : IEqualityComparer<object>
+        {
+            public new bool Equals(object x, object y)
+            {
+                return ReferenceEquals(x, y);
+            }
+
+            public int GetHashCode(object obj)
+            {
+                return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+            }
         }
 
         static void ShareStudiedTarget(BlueprintArchetype archetype)
